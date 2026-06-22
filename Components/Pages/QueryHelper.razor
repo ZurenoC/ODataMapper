@@ -1,0 +1,839 @@
+@page "/query/{EncodedTypeName}"
+@page "/query"
+@using ODataMapper.Models
+@using ODataMapper.Services
+@using System.Text.Json
+@inject MetadataStateService StateService
+@inject IJSRuntime JS
+@rendermode InteractiveServer
+
+<PageTitle>Query Helper - OData Analyzer</PageTitle>
+
+<div class="container-fluid">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="/">Entities</a></li>
+            @if (entity != null)
+            {
+                <li class="breadcrumb-item"><a href="/entity/@System.Net.WebUtility.UrlEncode(entity.FullTypeName)">@entity.Name</a></li>
+            }
+            <li class="breadcrumb-item active">Query Helper</li>
+        </ol>
+    </nav>
+
+    <h1 class="text-primary mb-4"><i class="bi bi-terminal"></i> Query Helper</h1>
+
+    @if (metadata == null)
+    {
+        <div class="alert alert-warning">
+            <p>No metadata loaded. <a href="/">Go back and load metadata first.</a></p>
+        </div>
+    }
+    else
+    {
+        @* Entity Selection *@
+        @if (entity == null)
+        {
+            <div class="row mb-4">
+                <div class="col-md-6">
+                    <div class="card shadow-sm">
+                        <div class="card-header"><h6 class="mb-0">Select Entity</h6></div>
+                        <div class="card-body">
+                            <div class="position-relative">
+                                <div class="input-group">
+                                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                                    <input type="text" class="form-control" placeholder="Search entity..."
+                                           @bind="entitySearch" @bind:event="oninput"
+                                           @onfocus="() => entityDropdownOpen = true" />
+                                </div>
+                                @if (entityDropdownOpen && EntitySearchResults.Any())
+                                {
+                                    <div class="search-dropdown shadow">
+                                        @foreach (var e in EntitySearchResults.Take(15))
+                                        {
+                                            <div class="search-dropdown-item" @onclick="() => SelectEntity(e)">
+                                                <strong>@e.Name</strong>
+                                                <small class="text-muted d-block">@e.EntitySetName</small>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+
+        @if (entity != null)
+        {
+            @* Method Tabs *@
+            <div class="row mb-3">
+                <div class="col-12">
+                    <ul class="nav nav-pills">
+                        <li class="nav-item">
+                            <button class="nav-link @(method == "GET" ? "active bg-success" : "")" @onclick='() => SetMethod("GET")'>
+                                <strong>GET</strong>
+                            </button>
+                        </li>
+                        <li class="nav-item">
+                            <button class="nav-link @(method == "POST" ? "active bg-primary" : "")" @onclick='() => SetMethod("POST")'>
+                                <strong>POST</strong>
+                            </button>
+                        </li>
+                        <li class="nav-item">
+                            <button class="nav-link @(method == "PATCH" ? "active bg-warning text-dark" : "")" @onclick='() => SetMethod("PATCH")'>
+                                <strong>PATCH</strong>
+                            </button>
+                        </li>
+                        <li class="nav-item">
+                            <button class="nav-link @(method == "DELETE" ? "active bg-danger" : "")" @onclick='() => SetMethod("DELETE")'>
+                                <strong>DELETE</strong>
+                            </button>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+
+            @* Resource URL *@
+            <div class="row mb-3">
+                <div class="col-12">
+                    <div class="card shadow-sm">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h6 class="mb-0">Resource Base URL</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="input-group">
+                                <span class="input-group-text">{{resource}}</span>
+                                <input type="text" class="form-control" placeholder="https://your-env.operations.dynamics.com/data/"
+                                       @bind="baseResourceUrl" @bind:event="oninput" />
+                            </div>
+                            <small class="text-muted">Set your environment base URL. Use <code>{{resource}}</code> in output for Postman variables.</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            @* Key Values (for PATCH/DELETE) *@
+            @if (method is "PATCH" or "DELETE")
+            {
+                <div class="row mb-3">
+                    <div class="col-12">
+                        <div class="card shadow-sm border-warning">
+                            <div class="card-header bg-warning text-dark">
+                                <h6 class="mb-0">Key Values (required for @method)</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row g-2">
+                                    @foreach (var key in entity.KeyProperties)
+                                    {
+                                        <div class="col-md-4">
+                                            @if (key.IsEnum && key.EnumTypeName != null)
+                                            {
+                                                @* Enum key — search-select *@
+                                                <div class="position-relative">
+                                                    <div class="input-group input-group-sm">
+                                                        <span class="input-group-text"><code>@key.Name</code></span>
+                                                        <input type="text" class="form-control"
+                                                               placeholder="Search enum value..."
+                                                               value="@GetKeyValue(key.Name)"
+                                                               @oninput="(e) => { SetKeyValue(key.Name, e.Value?.ToString() ?? string.Empty); OpenKeyEnumDropdown(key.Name); }"
+                                                               @onfocus="() => OpenKeyEnumDropdown(key.Name)" />
+                                                    </div>
+                                                    @if (activeKeyEnumDropdown == key.Name)
+                                                    {
+                                                        var enumType = StateService.FindEnum(key.EnumTypeName);
+                                                        if (enumType != null)
+                                                        {
+                                                            var keySearch = GetKeyValue(key.Name);
+                                                            var filteredMembers = string.IsNullOrWhiteSpace(keySearch)
+                                                                ? enumType.Members
+                                                                : enumType.Members.Where(m => m.Name.Contains(keySearch, StringComparison.OrdinalIgnoreCase)).ToList();
+                                                            <div class="search-dropdown shadow" style="max-height: 200px; z-index: 1060;">
+                                                                @foreach (var member in filteredMembers.Take(15))
+                                                                {
+                                                                    <div class="search-dropdown-item" @onclick="() => SelectKeyEnumValue(key.Name, member.Name)">
+                                                                        @member.Name
+                                                                        @if (member.Value != null)
+                                                                        {
+                                                                            <small class="text-muted ms-1">(@member.Value)</small>
+                                                                        }
+                                                                    </div>
+                                                                }
+                                                            </div>
+                                                        }
+                                                    }
+                                                </div>
+                                                <small class="text-muted" style="font-size: 0.7rem;">Enum: @key.EnumTypeName</small>
+                                            }
+                                            else
+                                            {
+                                                <div class="input-group input-group-sm">
+                                                    <span class="input-group-text"><code>@key.Name</code></span>
+                                                    <input type="text" class="form-control"
+                                                           placeholder="value"
+                                                           value="@GetKeyValue(key.Name)"
+                                                           @onchange="(e) => SetKeyValue(key.Name, e.Value?.ToString() ?? string.Empty)" />
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
+
+            @* Query Options *@
+            <div class="row mb-3">
+                <div class="col-12">
+                    <div class="card shadow-sm">
+                        <div class="card-header">
+                            <h6 class="mb-0">Query Options</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-3">
+                                <div class="col-md-2">
+                                    <div class="form-check form-switch">
+                                        <input class="form-check-input" type="checkbox" @bind="crossCompany" id="crossCompany" />
+                                        <label class="form-check-label" for="crossCompany">cross-company</label>
+                                    </div>
+                                </div>
+                                @if (method == "GET")
+                                {
+                                    <div class="col-md-2">
+                                        <div class="input-group input-group-sm">
+                                            <span class="input-group-text">$top</span>
+                                            <input type="number" class="form-control" @bind="top" min="0" />
+                                        </div>
+                                    </div>
+                                    <div class="col-md-2">
+                                        <div class="input-group input-group-sm">
+                                            <span class="input-group-text">$skip</span>
+                                            <input type="number" class="form-control" @bind="skip" min="0" />
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="input-group input-group-sm">
+                                            <span class="input-group-text">$select</span>
+                                            <input type="text" class="form-control" placeholder="field1,field2,..."
+                                                   @bind="selectFields" @bind:event="oninput" />
+                                        </div>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <div class="input-group input-group-sm">
+                                            <span class="input-group-text">$orderby</span>
+                                            <input type="text" class="form-control" placeholder="field asc/desc"
+                                                   @bind="orderBy" @bind:event="oninput" />
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            @* Filter Builder (GET only) *@
+            @if (method == "GET")
+            {
+                <div class="row mb-3">
+                    <div class="col-12">
+                        <div class="card shadow-sm">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h6 class="mb-0">$filter Builder</h6>
+                                <button class="btn btn-sm btn-outline-primary" @onclick="AddFilter">+ Add Condition</button>
+                            </div>
+                            <div class="card-body">
+                                @if (filters.Count == 0)
+                                {
+                                    <p class="text-muted mb-0">No filters. Click "Add Condition" to build a filter.</p>
+                                }
+                                else
+                                {
+                                    @for (int i = 0; i < filters.Count; i++)
+                                    {
+                                        var idx = i;
+                                        <div class="row g-2 mb-2 align-items-center">
+                                            @if (idx > 0)
+                                            {
+                                                <div class="col-md-1">
+                                                    <select class="form-select form-select-sm" @bind="filters[idx].LogicalOp">
+                                                        <option value="and">and</option>
+                                                        <option value="or">or</option>
+                                                    </select>
+                                                </div>
+                                            }
+                                            else
+                                            {
+                                                <div class="col-md-1"></div>
+                                            }
+                                            <div class="col-md-3">
+                                                <select class="form-select form-select-sm" @bind="filters[idx].Field">
+                                                    <option value="">-- Field --</option>
+                                                    @foreach (var prop in entity.Properties.OrderBy(p => p.Name))
+                                                    {
+                                                        <option value="@prop.Name">@prop.Name</option>
+                                                    }
+                                                </select>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <select class="form-select form-select-sm" @bind="filters[idx].Operator">
+                                                    <option value="eq">eq (equals)</option>
+                                                    <option value="ne">ne (not equals)</option>
+                                                    <option value="gt">gt (greater than)</option>
+                                                    <option value="ge">ge (greater or equal)</option>
+                                                    <option value="lt">lt (less than)</option>
+                                                    <option value="le">le (less or equal)</option>
+                                                    <option value="contains">contains</option>
+                                                    <option value="startswith">startswith</option>
+                                                    <option value="endswith">endswith</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-md-4">
+                                                <input type="text" class="form-control form-control-sm"
+                                                       placeholder="Value" @bind="filters[idx].Value" @bind:event="oninput" />
+                                            </div>
+                                            <div class="col-md-1">
+                                                <button class="btn btn-sm btn-outline-danger" @onclick="() => filters.RemoveAt(idx)">✗</button>
+                                            </div>
+                                        </div>
+                                    }
+                                }
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
+
+            @* Body Builder (POST/PATCH) *@
+            @if (method is "POST" or "PATCH")
+            {
+                <div class="row mb-3">
+                    <div class="col-12">
+                        <div class="card shadow-sm">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h6 class="mb-0">Request Body</h6>
+                                <div>
+                                    <button class="btn btn-sm btn-outline-secondary me-1" @onclick="AddAllEditableFields">All Editable Fields</button>
+                                    <button class="btn btn-sm btn-outline-secondary me-1" @onclick="AddRequiredFields">Required Only</button>
+                                    <button class="btn btn-sm btn-outline-danger" @onclick="ClearBody">Clear</button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div class="row mb-2">
+                                    <div class="col-md-6">
+                                        <div class="input-group input-group-sm">
+                                            <span class="input-group-text"><i class="bi bi-search"></i></span>
+                                            <input type="text" class="form-control" placeholder="Search field to add..."
+                                                   @bind="bodyFieldSearch" @bind:event="oninput"
+                                                   @onfocus="() => bodyFieldDropdownOpen = true" />
+                                        </div>
+                                        @if (bodyFieldDropdownOpen && BodyFieldSearchResults.Any())
+                                        {
+                                            <div class="search-dropdown shadow" style="max-height: 200px;">
+                                                @foreach (var prop in BodyFieldSearchResults.Take(10))
+                                                {
+                                                    <div class="search-dropdown-item" @onclick="() => AddBodyField(prop)">
+                                                        <strong>@prop.Name</strong>
+                                                        <small class="text-muted ms-2">@prop.DisplayType</small>
+                                                        @if (!prop.AllowEdit)
+                                                        {
+                                                            <span class="badge bg-warning text-dark ms-1">Read-only</span>
+                                                        }
+                                                        @if (prop.IsRequired)
+                                                        {
+                                                            <span class="badge bg-danger ms-1">Required</span>
+                                                        }
+                                                    </div>
+                                                }
+                                            </div>
+                                        }
+                                    </div>
+                                </div>
+                                @if (bodyFields.Count > 0)
+                                {
+                                    <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                                        <table class="table table-sm mb-0">
+                                            <thead class="table-light sticky-top">
+                                                <tr>
+                                                    <th>Field</th>
+                                                    <th>Type</th>
+                                                    <th>Value</th>
+                                                    <th></th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach (var bodyItem in bodyFields)
+                                                {
+                                                    <tr class="@(!bodyItem.AllowEdit ? "table-warning" : "")">
+                                                        <td>
+                                                            <code>@bodyItem.Name</code>
+                                                            @if (bodyItem.IsRequired)
+                                                            {
+                                                                <span class="badge bg-danger ms-1">*</span>
+                                                            }
+                                                        </td>
+                                                        <td><small class="text-muted">@bodyItem.DisplayType</small></td>
+                                                        <td>
+                                                            @if (bodyItem.IsEnum && bodyItem.EnumTypeName != null)
+                                                            {
+                                                                @* Enum field — search-select *@
+                                                                <div class="position-relative">
+                                                                    <input type="text" class="form-control form-control-sm"
+                                                                           placeholder="Search enum value..."
+                                                                           @bind="bodyItem.Value" @bind:event="oninput"
+                                                                           @onfocus="() => OpenBodyEnumDropdown(bodyItem.Name)" />
+                                                                    @if (activeBodyEnumDropdown == bodyItem.Name)
+                                                                    {
+                                                                        var enumType = StateService.FindEnum(bodyItem.EnumTypeName);
+                                                                        if (enumType != null)
+                                                                        {
+                                                                            var filteredMembers = string.IsNullOrWhiteSpace(bodyItem.Value)
+                                                                                ? enumType.Members
+                                                                                : enumType.Members.Where(m => m.Name.Contains(bodyItem.Value, StringComparison.OrdinalIgnoreCase)).ToList();
+                                                                            <div class="search-dropdown shadow" style="max-height: 150px; z-index: 1060;">
+                                                                                @foreach (var member in filteredMembers.Take(10))
+                                                                                {
+                                                                                    var capturedItem = bodyItem;
+                                                                                    <div class="search-dropdown-item" @onclick="() => SelectBodyEnumValue(capturedItem, member.Name)">
+                                                                                        @member.Name
+                                                                                        @if (member.Value != null)
+                                                                                        {
+                                                                                            <small class="text-muted ms-1">(@member.Value)</small>
+                                                                                        }
+                                                                                    </div>
+                                                                                }
+                                                                            </div>
+                                                                        }
+                                                                    }
+                                                                </div>
+                                                            }
+                                                            else
+                                                            {
+                                                                <input type="text" class="form-control form-control-sm"
+                                                                       placeholder="@GetPlaceholder(bodyItem)"
+                                                                       @bind="bodyItem.Value" @bind:event="oninput" />
+                                                            }
+                                                        </td>
+                                                        <td>
+                                                            <button class="btn btn-sm btn-outline-danger py-0" @onclick="() => bodyFields.Remove(bodyItem)">✗</button>
+                                                        </td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
+
+            @* Generated Output *@
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card shadow-sm border-dark">
+                        <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                            <h6 class="mb-0">Generated Request</h6>
+                            <button class="btn btn-sm btn-outline-light" @onclick="CopyToClipboard">
+                                <i class="bi bi-clipboard"></i> Copy All
+                            </button>
+                        </div>
+                        <div class="card-body bg-dark text-light font-monospace" style="white-space: pre-wrap; font-size: 0.85rem;">
+                            <div class="mb-2">
+                                <span class="@MethodColor">@method</span> <span class="text-info">@GeneratedUrl</span>
+                            </div>
+                            @if (!string.IsNullOrEmpty(GeneratedBody))
+                            {
+                                <div class="mt-2 pt-2 border-top border-secondary">
+                                    <span class="text-warning">Content-Type: application/json</span>
+                                </div>
+                                <div class="mt-2">@GeneratedBody</div>
+                            }
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            @if (copied)
+            {
+                <div class="alert alert-success alert-dismissible fade show" role="alert">
+                    Copied to clipboard!
+                    <button type="button" class="btn-close" @onclick="() => copied = false"></button>
+                </div>
+            }
+        }
+    }
+</div>
+
+@code {
+    [Parameter]
+    public string? EncodedTypeName { get; set; }
+
+    private ODataMetadataResult? metadata;
+    private ODataEntity? entity;
+
+    // Entity search
+    private string entitySearch = string.Empty;
+    private bool entityDropdownOpen;
+
+    // Request config
+    private string method = "GET";
+    private string baseResourceUrl = string.Empty;
+    private bool crossCompany = true;
+    private int? top;
+    private int? skip;
+    private string selectFields = string.Empty;
+    private string orderBy = string.Empty;
+    private Dictionary<string, string> keyValues = [];
+    private List<FilterCondition> filters = [];
+    private List<BodyField> bodyFields = [];
+    private bool copied;
+
+    // Body field search
+    private string bodyFieldSearch = string.Empty;
+    private bool bodyFieldDropdownOpen;
+
+    // Enum dropdown state
+    private string? activeKeyEnumDropdown;
+    private string? activeBodyEnumDropdown;
+
+    private IEnumerable<ODataEntity> EntitySearchResults
+    {
+        get
+        {
+            if (metadata == null) return [];
+            var entities = metadata.Entities.Where(e => !string.IsNullOrEmpty(e.EntitySetName));
+            if (!string.IsNullOrWhiteSpace(entitySearch))
+            {
+                var term = entitySearch.Trim();
+                entities = entities.Where(e =>
+                    e.Name.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                    e.EntitySetName.Contains(term, StringComparison.OrdinalIgnoreCase));
+            }
+            return entities.OrderBy(e => e.Name);
+        }
+    }
+
+    private IEnumerable<ODataProperty> BodyFieldSearchResults
+    {
+        get
+        {
+            if (entity == null) return [];
+            var props = entity.Properties.Where(p => !bodyFields.Any(bf => bf.Name == p.Name));
+            if (!string.IsNullOrWhiteSpace(bodyFieldSearch))
+            {
+                var term = bodyFieldSearch.Trim();
+                props = props.Where(p => p.Name.Contains(term, StringComparison.OrdinalIgnoreCase));
+            }
+            return props.OrderBy(p => p.Name);
+        }
+    }
+
+    private string MethodColor => method switch
+    {
+        "GET" => "text-success",
+        "POST" => "text-primary",
+        "PATCH" => "text-warning",
+        "DELETE" => "text-danger",
+        _ => ""
+    };
+
+    private string GeneratedUrl
+    {
+        get
+        {
+            if (entity == null) return string.Empty;
+
+            var resource = string.IsNullOrWhiteSpace(baseResourceUrl) ? "{{resource}}" : baseResourceUrl.TrimEnd('/') + "/";
+            var url = $"{resource}{entity.EntitySetName}";
+
+            // Key values for PATCH/DELETE
+            if (method is "PATCH" or "DELETE" && entity.KeyProperties.Count > 0)
+            {
+                var keyParts = entity.KeyProperties
+                    .Select(k =>
+                    {
+                        var val = GetKeyValue(k.Name);
+                        if (k.IsEnum && k.EnumTypeName != null)
+                        {
+                            // Enum keys use full type path: TypeName'Value'
+                            var enumVal = string.IsNullOrEmpty(val) ? $"'{k.Name}_value'" : $"'{val}'";
+                            return $"{k.Name}={k.EnumTypeName}{enumVal}";
+                        }
+                        var formatted = string.IsNullOrEmpty(val) ? $"'{k.Name}_value'" : $"'{val}'";
+                        return $"{k.Name}={formatted}";
+                    });
+                url += $"({string.Join(',', keyParts)})";
+            }
+
+            // Query parameters
+            var queryParams = new List<string>();
+            if (crossCompany) queryParams.Add("cross-company=true");
+            if (method == "GET")
+            {
+                if (filters.Count > 0)
+                {
+                    var filterStr = BuildFilterString();
+                    if (!string.IsNullOrEmpty(filterStr))
+                        queryParams.Add($"$filter={filterStr}");
+                }
+                if (top > 0) queryParams.Add($"$top={top}");
+                if (skip > 0) queryParams.Add($"$skip={skip}");
+                if (!string.IsNullOrWhiteSpace(selectFields)) queryParams.Add($"$select={selectFields.Trim()}");
+                if (!string.IsNullOrWhiteSpace(orderBy)) queryParams.Add($"$orderby={orderBy.Trim()}");
+            }
+
+            if (queryParams.Count > 0)
+                url += "?" + string.Join("&", queryParams);
+
+            return url;
+        }
+    }
+
+    private string GeneratedBody
+    {
+        get
+        {
+            if (method is not ("POST" or "PATCH") || bodyFields.Count == 0)
+                return string.Empty;
+
+            var obj = new Dictionary<string, object?>();
+            foreach (var bodyItem in bodyFields)
+            {
+                obj[bodyItem.Name] = FormatValue(bodyItem);
+            }
+
+            return JsonSerializer.Serialize(obj, new JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+        }
+    }
+
+    protected override void OnParametersSet()
+    {
+        metadata = StateService.CurrentMetadata;
+        if (metadata == null || string.IsNullOrEmpty(EncodedTypeName)) return;
+
+        var typeName = System.Net.WebUtility.UrlDecode(EncodedTypeName);
+        entity = metadata.Entities.FirstOrDefault(e => e.FullTypeName == typeName)
+                ?? metadata.Entities.FirstOrDefault(e => e.Name == typeName);
+
+        if (entity != null && string.IsNullOrEmpty(baseResourceUrl) && !string.IsNullOrEmpty(metadata.BaseUrl))
+        {
+            baseResourceUrl = metadata.BaseUrl + "/data/";
+        }
+    }
+
+    private void SelectEntity(ODataEntity e)
+    {
+        entity = e;
+        entitySearch = string.Empty;
+        entityDropdownOpen = false;
+        if (!string.IsNullOrEmpty(metadata?.BaseUrl))
+        {
+            baseResourceUrl = metadata.BaseUrl + "/data/";
+        }
+    }
+
+    private void SetMethod(string m)
+    {
+        method = m;
+        if (m is "POST" && bodyFields.Count == 0)
+        {
+            AddRequiredFields();
+        }
+    }
+
+    private string GetKeyValue(string keyName)
+    {
+        return keyValues.GetValueOrDefault(keyName, string.Empty);
+    }
+
+    private void SetKeyValue(string keyName, string value)
+    {
+        keyValues[keyName] = value;
+    }
+
+    private void AddFilter()
+    {
+        filters.Add(new FilterCondition());
+    }
+
+    private string BuildFilterString()
+    {
+        var parts = new List<string>();
+        foreach (var f in filters)
+        {
+            if (string.IsNullOrEmpty(f.Field)) continue;
+
+            var valuePart = f.Operator switch
+            {
+                "contains" => $"contains({f.Field},'{f.Value}')",
+                "startswith" => $"startswith({f.Field},'{f.Value}')",
+                "endswith" => $"endswith({f.Field},'{f.Value}')",
+                _ => $"{f.Field} {f.Operator} '{f.Value}'"
+            };
+
+            if (parts.Count > 0)
+                parts.Add($" {f.LogicalOp} {valuePart}");
+            else
+                parts.Add(valuePart);
+        }
+        return string.Concat(parts);
+    }
+
+    private void AddBodyField(ODataProperty prop)
+    {
+        if (!bodyFields.Any(f => f.Name == prop.Name))
+        {
+            bodyFields.Add(new BodyField
+            {
+                Name = prop.Name,
+                DisplayType = prop.DisplayType,
+                Type = prop.Type,
+                IsRequired = prop.IsRequired,
+                AllowEdit = prop.AllowEdit,
+                IsEnum = prop.IsEnum,
+                EnumTypeName = prop.EnumTypeName,
+                Value = string.Empty
+            });
+        }
+        bodyFieldSearch = string.Empty;
+        bodyFieldDropdownOpen = false;
+    }
+
+    private void AddAllEditableFields()
+    {
+        if (entity == null) return;
+        foreach (var prop in entity.Properties.Where(p => p.AllowEdit))
+        {
+            if (!bodyFields.Any(f => f.Name == prop.Name))
+            {
+                bodyFields.Add(new BodyField
+                {
+                    Name = prop.Name,
+                    DisplayType = prop.DisplayType,
+                    Type = prop.Type,
+                    IsRequired = prop.IsRequired,
+                    AllowEdit = prop.AllowEdit,
+                    IsEnum = prop.IsEnum,
+                    EnumTypeName = prop.EnumTypeName,
+                    Value = string.Empty
+                });
+            }
+        }
+    }
+
+    private void AddRequiredFields()
+    {
+        if (entity == null) return;
+        // Add key fields + required fields + non-nullable editable fields
+        foreach (var prop in entity.Properties.Where(p => p.IsKey || p.IsRequired || (!p.IsNullable && p.AllowEdit)))
+        {
+            if (!bodyFields.Any(f => f.Name == prop.Name))
+            {
+                bodyFields.Add(new BodyField
+                {
+                    Name = prop.Name,
+                    DisplayType = prop.DisplayType,
+                    Type = prop.Type,
+                    IsRequired = prop.IsRequired || prop.IsKey || !prop.IsNullable,
+                    AllowEdit = prop.AllowEdit,
+                    IsEnum = prop.IsEnum,
+                    EnumTypeName = prop.EnumTypeName,
+                    Value = string.Empty
+                });
+            }
+        }
+    }
+
+    private void ClearBody() => bodyFields.Clear();
+
+    private static string GetPlaceholder(BodyField field)
+    {
+        return field.DisplayType switch
+        {
+            "String" => "\"text\"",
+            "Int32" or "Int64" => "0",
+            "Decimal" => "0.00",
+            "Boolean" => "true/false",
+            "DateTimeOffset" => "2024-01-01T00:00:00Z",
+            "Guid" => "00000000-0000-0000-0000-000000000000",
+            _ => "value"
+        };
+    }
+
+    private static object? FormatValue(BodyField field)
+    {
+        if (string.IsNullOrEmpty(field.Value)) return "";
+
+        return field.DisplayType switch
+        {
+            "Int32" when int.TryParse(field.Value, out var i) => i,
+            "Int64" when long.TryParse(field.Value, out var l) => l,
+            "Decimal" when decimal.TryParse(field.Value, out var d) => d,
+            "Boolean" when bool.TryParse(field.Value, out var b) => b,
+            _ => field.Value
+        };
+    }
+
+    private async Task CopyToClipboard()
+    {
+        var text = $"{method} {GeneratedUrl}";
+        if (!string.IsNullOrEmpty(GeneratedBody))
+        {
+            text += $"\nContent-Type: application/json\n\n{GeneratedBody}";
+        }
+        await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+        copied = true;
+    }
+
+    private void OpenKeyEnumDropdown(string keyName)
+    {
+        activeKeyEnumDropdown = keyName;
+        activeBodyEnumDropdown = null;
+    }
+
+    private void SelectKeyEnumValue(string keyName, string value)
+    {
+        keyValues[keyName] = value;
+        activeKeyEnumDropdown = null;
+    }
+
+    private void OpenBodyEnumDropdown(string fieldName)
+    {
+        activeBodyEnumDropdown = fieldName;
+        activeKeyEnumDropdown = null;
+    }
+
+    private void SelectBodyEnumValue(BodyField bodyItem, string value)
+    {
+        bodyItem.Value = value;
+        activeBodyEnumDropdown = null;
+    }
+
+    private class FilterCondition
+    {
+        public string Field { get; set; } = string.Empty;
+        public string Operator { get; set; } = "eq";
+        public string Value { get; set; } = string.Empty;
+        public string LogicalOp { get; set; } = "and";
+    }
+
+    private class BodyField
+    {
+        public string Name { get; set; } = string.Empty;
+        public string DisplayType { get; set; } = string.Empty;
+        public string Type { get; set; } = string.Empty;
+        public bool IsRequired { get; set; }
+        public bool AllowEdit { get; set; } = true;
+        public bool IsEnum { get; set; }
+        public string? EnumTypeName { get; set; }
+        public string Value { get; set; } = string.Empty;
+    }
+}

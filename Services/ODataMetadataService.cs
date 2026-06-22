@@ -206,10 +206,27 @@ public class ODataMetadataService
         var name = element.Attribute("Name")?.Value ?? string.Empty;
         var type = element.Attribute("Type")?.Value ?? "Edm.String";
         var nullable = element.Attribute("Nullable")?.Value;
-        var maxLength = element.Attribute("MaxLength")?.Value;
 
         var isEnum = enumTypes.ContainsKey(type);
         var displayType = GetDisplayType(type);
+
+        // Parse F&O annotations
+        bool isRequired = false;
+        bool allowEdit = true;
+
+        foreach (var annotation in element.Elements().Where(e => e.Name.LocalName == "Annotation"))
+        {
+            var term = annotation.Attribute("Term")?.Value ?? string.Empty;
+            switch (term)
+            {
+                case "Microsoft.Dynamics.OData.Core.V1.IsRequired":
+                    isRequired = annotation.Attribute("Bool")?.Value == "true";
+                    break;
+                case "Microsoft.Dynamics.OData.Core.V1.AllowEdit":
+                    allowEdit = annotation.Attribute("Bool")?.Value != "false";
+                    break;
+            }
+        }
 
         return new ODataProperty
         {
@@ -220,7 +237,8 @@ public class ODataMetadataService
             IsKey = keyNames.Contains(name),
             IsEnum = isEnum,
             EnumTypeName = isEnum ? type : null,
-            MaxLength = int.TryParse(maxLength, out var ml) ? ml : null
+            IsRequired = isRequired,
+            AllowEdit = allowEdit
         };
     }
 
@@ -240,13 +258,30 @@ public class ODataMetadataService
             ? targetType[(targetType.LastIndexOf('.') + 1)..]
             : targetType;
 
+        // Parse referential constraints
+        var constraints = new List<ODataReferentialConstraint>();
+        foreach (var rc in element.Elements().Where(e => e.Name.LocalName == "ReferentialConstraint"))
+        {
+            var prop = rc.Attribute("Property")?.Value ?? string.Empty;
+            var refProp = rc.Attribute("ReferencedProperty")?.Value ?? string.Empty;
+            if (!string.IsNullOrEmpty(prop))
+            {
+                constraints.Add(new ODataReferentialConstraint
+                {
+                    Property = prop,
+                    ReferencedProperty = refProp
+                });
+            }
+        }
+
         return new ODataNavigation
         {
             Name = name,
             Type = type,
             TargetEntityName = targetEntityName,
             IsCollection = isCollection,
-            Partner = partner
+            Partner = partner,
+            Constraints = constraints
         };
     }
 

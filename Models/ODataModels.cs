@@ -31,7 +31,8 @@ public class ODataProperty
     public bool IsKey { get; set; }
     public bool IsEnum { get; set; }
     public string? EnumTypeName { get; set; }
-    public int? MaxLength { get; set; }
+    public bool IsRequired { get; set; }
+    public bool AllowEdit { get; set; } = true;
 }
 
 /// <summary>
@@ -45,6 +46,16 @@ public class ODataNavigation
     public bool IsCollection { get; set; }
     public string RelationshipType => IsCollection ? "One-to-Many" : "Many-to-One";
     public string? Partner { get; set; }
+    public List<ODataReferentialConstraint> Constraints { get; set; } = [];
+}
+
+/// <summary>
+/// Represents a referential constraint linking a local property to a referenced property on the target entity.
+/// </summary>
+public class ODataReferentialConstraint
+{
+    public string Property { get; set; } = string.Empty;
+    public string ReferencedProperty { get; set; } = string.Empty;
 }
 
 /// <summary>
