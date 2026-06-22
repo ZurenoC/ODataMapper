@@ -1,0 +1,263 @@
+﻿@page "/"
+@using ODataMapper.Models
+@using ODataMapper.Services
+@inject ODataMetadataService MetadataService
+@rendermode InteractiveServer
+
+<PageTitle>OData Metadata Analyzer</PageTitle>
+
+<div class="container-fluid">
+    <div class="row mb-4">
+        <div class="col-12">
+            <h1 class="text-primary"><i class="bi bi-diagram-3"></i> OData Metadata Analyzer</h1>
+            <p class="text-muted">Analyze F&amp;O OData entities, relationships, and enum types from any metadata endpoint.</p>
+        </div>
+    </div>
+
+    @* URL Input Section *@
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <div class="input-group input-group-lg">
+                        <span class="input-group-text bg-primary text-white">
+                            <i class="bi bi-globe"></i>
+                        </span>
+                        <input type="text" class="form-control" placeholder="Enter F&O environment URL (e.g., https://your-env.operations.dynamics.com)"
+                               @bind="metadataUrl" @bind:event="oninput" @onkeydown="HandleKeyDown" disabled="@isLoading" />
+                        <button class="btn btn-primary" @onclick="LoadMetadata" disabled="@isLoading">
+                            @if (isLoading)
+                            {
+                                <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                                <span>Loading...</span>
+                            }
+                            else
+                            {
+                                <span>Load Metadata</span>
+                            }
+                        </button>
+                    </div>
+                    <small class="text-muted mt-1 d-block">
+                        <i class="bi bi-info-circle"></i> Automatically appends <code>/data/$metadata</code> if not present.
+                    </small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @* Error Display *@
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            <strong>Error:</strong> @errorMessage
+            <button type="button" class="btn-close" @onclick="() => errorMessage = string.Empty"></button>
+        </div>
+    }
+
+    @* Results Section *@
+    @if (metadata != null)
+    {
+        @* Stats Cards *@
+        <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="card bg-primary text-white shadow-sm">
+                    <div class="card-body text-center">
+                        <h3>@metadata.TotalEntitySets</h3>
+                        <small>Entity Sets</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card bg-success text-white shadow-sm">
+                    <div class="card-body text-center">
+                        <h3>@metadata.TotalEntityTypes</h3>
+                        <small>Entity Types</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card bg-info text-white shadow-sm">
+                    <div class="card-body text-center">
+                        <h3>@metadata.TotalEnumTypes</h3>
+                        <small>Enum Types</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card bg-warning text-dark shadow-sm">
+                    <div class="card-body text-center">
+                        <h3>@metadata.Entities.Count(e => e.HasMultipleVersions)</h3>
+                        <small>Versioned Entities</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        @* Search and Filter *@
+        <div class="row mb-3">
+            <div class="col-md-6">
+                <div class="input-group">
+                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                    <input type="text" class="form-control" placeholder="Search entities by name, EntitySet, or type..."
+                           @bind="searchTerm" @bind:event="oninput" />
+                    @if (!string.IsNullOrEmpty(searchTerm))
+                    {
+                        <button class="btn btn-outline-secondary" @onclick="() => searchTerm = string.Empty">
+                            <i class="bi bi-x"></i>
+                        </button>
+                    }
+                </div>
+            </div>
+            <div class="col-md-3">
+                <select class="form-select" @bind="filterType">
+                    <option value="all">All Entities</option>
+                    <option value="withSet">With EntitySet (URL accessible)</option>
+                    <option value="versioned">Versioned Only</option>
+                    <option value="withNav">With Relationships</option>
+                </select>
+            </div>
+            <div class="col-md-3 text-end">
+                <span class="badge bg-secondary fs-6">@FilteredEntities.Count() results</span>
+            </div>
+        </div>
+
+        @* Entity List *@
+        <div class="row">
+            <div class="col-12">
+                <div class="entity-list">
+                    <Virtualize Items="@FilteredEntities.ToList()" Context="entity">
+                        <div class="card mb-2 entity-card shadow-sm @(entity.HasMultipleVersions ? "border-warning" : "")">
+                            <div class="card-body py-2">
+                                <div class="row align-items-center">
+                                    <div class="col-md-4">
+                                        <h6 class="mb-0">
+                                            <a href="/entity/@System.Net.WebUtility.UrlEncode(entity.FullTypeName)" class="text-decoration-none">
+                                                @entity.Name
+                                            </a>
+                                            @if (entity.HasMultipleVersions)
+                                            {
+                                                <span class="badge bg-warning text-dark ms-1" title="Multiple versions exist">V+</span>
+                                            }
+                                        </h6>
+                                        @if (!string.IsNullOrEmpty(entity.EntitySetName))
+                                        {
+                                            <small class="text-muted">Set: @entity.EntitySetName</small>
+                                        }
+                                    </div>
+                                    <div class="col-md-3">
+                                        @if (!string.IsNullOrEmpty(entity.EntitySetUrl))
+                                        {
+                                            <code class="small">@entity.EntitySetUrl</code>
+                                        }
+                                    </div>
+                                    <div class="col-md-3">
+                                        <span class="badge bg-light text-dark me-1">@entity.Properties.Count props</span>
+                                        <span class="badge bg-light text-dark me-1">@entity.NavigationProperties.Count navs</span>
+                                        @if (entity.Properties.Any(p => p.IsEnum))
+                                        {
+                                            <span class="badge bg-info text-white">@entity.Properties.Count(p => p.IsEnum) enums</span>
+                                        }
+                                    </div>
+                                    <div class="col-md-2 text-end">
+                                        <a href="/entity/@System.Net.WebUtility.UrlEncode(entity.FullTypeName)" class="btn btn-sm btn-outline-primary me-1">
+                                            Details
+                                        </a>
+                                        @if (entity.HasMultipleVersions)
+                                        {
+                                            <a href="/compare/@System.Net.WebUtility.UrlEncode(entity.FullTypeName)" class="btn btn-sm btn-outline-warning">
+                                                Compare
+                                            </a>
+                                        }
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </Virtualize>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private string metadataUrl = string.Empty;
+    private string searchTerm = string.Empty;
+    private string filterType = "all";
+    private bool isLoading;
+    private string errorMessage = string.Empty;
+    private ODataMetadataResult? metadata;
+
+    // Store metadata in a static field so other pages can access it (simple state management)
+    public static ODataMetadataResult? CurrentMetadata { get; private set; }
+
+    private IEnumerable<ODataEntity> FilteredEntities
+    {
+        get
+        {
+            if (metadata == null) return [];
+
+            var entities = metadata.Entities.AsEnumerable();
+
+            // Apply filter
+            entities = filterType switch
+            {
+                "withSet" => entities.Where(e => !string.IsNullOrEmpty(e.EntitySetName)),
+                "versioned" => entities.Where(e => e.HasMultipleVersions),
+                "withNav" => entities.Where(e => e.NavigationProperties.Count > 0),
+                _ => entities
+            };
+
+            // Apply search
+            if (!string.IsNullOrWhiteSpace(searchTerm))
+            {
+                var term = searchTerm.Trim();
+                entities = entities.Where(e =>
+                    e.Name.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                    e.EntitySetName.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                    e.FullTypeName.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+                    e.Properties.Any(p => p.Name.Contains(term, StringComparison.OrdinalIgnoreCase)));
+            }
+
+            return entities.OrderBy(e => e.Name);
+        }
+    }
+
+    private async Task LoadMetadata()
+    {
+        if (string.IsNullOrWhiteSpace(metadataUrl))
+        {
+            errorMessage = "Please enter a URL.";
+            return;
+        }
+
+        isLoading = true;
+        errorMessage = string.Empty;
+        metadata = null;
+
+        try
+        {
+            metadata = await MetadataService.LoadMetadataAsync(metadataUrl);
+            CurrentMetadata = metadata;
+        }
+        catch (HttpRequestException ex)
+        {
+            errorMessage = $"Failed to fetch metadata: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Failed to parse metadata: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await LoadMetadata();
+        }
+    }
+}

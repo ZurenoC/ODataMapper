@@ -1,0 +1,336 @@
+@page "/compare/{EncodedTypeName}"
+@page "/compare"
+@using ODataMapper.Models
+@using ODataMapper.Components.Pages
+@rendermode InteractiveServer
+
+<PageTitle>Compare Entities - OData Analyzer</PageTitle>
+
+<div class="container-fluid">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="/">Entities</a></li>
+            <li class="breadcrumb-item active">Compare</li>
+        </ol>
+    </nav>
+
+    <h1 class="text-primary mb-4"><i class="bi bi-layout-split"></i> Compare Entities</h1>
+
+    @if (metadata == null)
+    {
+        <div class="alert alert-warning">
+            <p>No metadata loaded. <a href="/">Go back and load metadata first.</a></p>
+        </div>
+    }
+    else
+    {
+        @* Entity Selection *@
+        <div class="row mb-4">
+            <div class="col-md-5">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-primary text-white">
+                        <h6 class="mb-0">Left Entity</h6>
+                    </div>
+                    <div class="card-body">
+                        <select class="form-select" @bind="leftEntityType">
+                            <option value="">-- Select Entity --</option>
+                            @foreach (var e in metadata.Entities.Where(e => !string.IsNullOrEmpty(e.EntitySetName)).OrderBy(e => e.Name))
+                            {
+                                <option value="@e.FullTypeName">@e.Name (@e.EntitySetName)</option>
+                            }
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2 d-flex align-items-center justify-content-center">
+                <span class="fs-1 text-muted">⇄</span>
+            </div>
+            <div class="col-md-5">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-success text-white">
+                        <h6 class="mb-0">Right Entity</h6>
+                    </div>
+                    <div class="card-body">
+                        <select class="form-select" @bind="rightEntityType">
+                            <option value="">-- Select Entity --</option>
+                            @foreach (var e in metadata.Entities.Where(e => !string.IsNullOrEmpty(e.EntitySetName)).OrderBy(e => e.Name))
+                            {
+                                <option value="@e.FullTypeName">@e.Name (@e.EntitySetName)</option>
+                            }
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        @* Comparison Results *@
+        @if (LeftEntity != null && RightEntity != null)
+        {
+            @* Summary *@
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card shadow-sm">
+                        <div class="card-header">
+                            <h5 class="mb-0">Comparison Summary</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row text-center">
+                                <div class="col-md-3">
+                                    <h6>Properties</h6>
+                                    <span class="badge bg-primary fs-6">@LeftEntity.Properties.Count</span>
+                                    <span class="text-muted mx-1">vs</span>
+                                    <span class="badge bg-success fs-6">@RightEntity.Properties.Count</span>
+                                </div>
+                                <div class="col-md-3">
+                                    <h6>Shared Properties</h6>
+                                    <span class="badge bg-secondary fs-6">@SharedProperties.Count()</span>
+                                </div>
+                                <div class="col-md-3">
+                                    <h6>Only in @LeftEntity.Name</h6>
+                                    <span class="badge bg-primary fs-6">@LeftOnlyProperties.Count()</span>
+                                </div>
+                                <div class="col-md-3">
+                                    <h6>Only in @RightEntity.Name</h6>
+                                    <span class="badge bg-success fs-6">@RightOnlyProperties.Count()</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            @* Tabbed Comparison *@
+            <ul class="nav nav-tabs mb-3">
+                <li class="nav-item">
+                    <button class="nav-link @(activeTab == "all" ? "active" : "")" @onclick='() => activeTab = "all"'>
+                        All Properties
+                    </button>
+                </li>
+                <li class="nav-item">
+                    <button class="nav-link @(activeTab == "shared" ? "active" : "")" @onclick='() => activeTab = "shared"'>
+                        Shared (@SharedProperties.Count())
+                    </button>
+                </li>
+                <li class="nav-item">
+                    <button class="nav-link @(activeTab == "leftonly" ? "active" : "")" @onclick='() => activeTab = "leftonly"'>
+                        Only in @LeftEntity.Name (@LeftOnlyProperties.Count())
+                    </button>
+                </li>
+                <li class="nav-item">
+                    <button class="nav-link @(activeTab == "rightonly" ? "active" : "")" @onclick='() => activeTab = "rightonly"'>
+                        Only in @RightEntity.Name (@RightOnlyProperties.Count())
+                    </button>
+                </li>
+                <li class="nav-item">
+                    <button class="nav-link @(activeTab == "diff" ? "active" : "")" @onclick='() => activeTab = "diff"'>
+                        Type Differences (@TypeDifferences.Count())
+                    </button>
+                </li>
+            </ul>
+
+            <div class="table-responsive" style="max-height: 600px; overflow-y: auto;">
+                <table class="table table-sm table-hover">
+                    <thead class="table-light sticky-top">
+                        <tr>
+                            <th>Property Name</th>
+                            <th class="text-primary">@LeftEntity.Name Type</th>
+                            <th class="text-success">@RightEntity.Name Type</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in GetComparisonRows())
+                        {
+                            <tr class="@row.RowClass">
+                                <td><strong>@row.Name</strong></td>
+                                <td><code>@(row.LeftType ?? "—")</code></td>
+                                <td><code>@(row.RightType ?? "—")</code></td>
+                                <td>
+                                    @switch (row.Status)
+                                    {
+                                        case "shared":
+                                            <span class="badge bg-secondary">Shared</span>
+                                            break;
+                                        case "left-only":
+                                            <span class="badge bg-primary">Left Only</span>
+                                            break;
+                                        case "right-only":
+                                            <span class="badge bg-success">Right Only</span>
+                                            break;
+                                        case "type-diff":
+                                            <span class="badge bg-danger">Type Changed</span>
+                                            break;
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            @* Navigation Properties Comparison *@
+            <div class="row mt-4">
+                <div class="col-md-6">
+                    <div class="card shadow-sm">
+                        <div class="card-header bg-primary text-white">
+                            <h6 class="mb-0">@LeftEntity.Name Relationships (@LeftEntity.NavigationProperties.Count)</h6>
+                        </div>
+                        <div class="card-body p-0" style="max-height: 300px; overflow-y: auto;">
+                            <table class="table table-sm mb-0">
+                                <thead class="table-light">
+                                    <tr><th>Name</th><th>Target</th><th>Type</th></tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var nav in LeftEntity.NavigationProperties.OrderBy(n => n.Name))
+                                    {
+                                        <tr>
+                                            <td>@nav.Name</td>
+                                            <td><code>@nav.TargetEntityName</code></td>
+                                            <td>
+                                                <span class="badge @(nav.IsCollection ? "bg-success" : "bg-secondary")">
+                                                    @nav.RelationshipType
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card shadow-sm">
+                        <div class="card-header bg-success text-white">
+                            <h6 class="mb-0">@RightEntity.Name Relationships (@RightEntity.NavigationProperties.Count)</h6>
+                        </div>
+                        <div class="card-body p-0" style="max-height: 300px; overflow-y: auto;">
+                            <table class="table table-sm mb-0">
+                                <thead class="table-light">
+                                    <tr><th>Name</th><th>Target</th><th>Type</th></tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var nav in RightEntity.NavigationProperties.OrderBy(n => n.Name))
+                                    {
+                                        <tr>
+                                            <td>@nav.Name</td>
+                                            <td><code>@nav.TargetEntityName</code></td>
+                                            <td>
+                                                <span class="badge @(nav.IsCollection ? "bg-success" : "bg-secondary")">
+                                                    @nav.RelationshipType
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    [Parameter]
+    public string? EncodedTypeName { get; set; }
+
+    private ODataMetadataResult? metadata;
+    private string leftEntityType = string.Empty;
+    private string rightEntityType = string.Empty;
+    private string activeTab = "all";
+
+    private ODataEntity? LeftEntity => metadata?.Entities.FirstOrDefault(e => e.FullTypeName == leftEntityType);
+    private ODataEntity? RightEntity => metadata?.Entities.FirstOrDefault(e => e.FullTypeName == rightEntityType);
+
+    private IEnumerable<ODataProperty> SharedProperties =>
+        LeftEntity?.Properties.Where(p => RightEntity?.Properties.Any(rp => rp.Name == p.Name) == true) ?? [];
+
+    private IEnumerable<ODataProperty> LeftOnlyProperties =>
+        LeftEntity?.Properties.Where(p => RightEntity?.Properties.All(rp => rp.Name != p.Name) == true) ?? [];
+
+    private IEnumerable<ODataProperty> RightOnlyProperties =>
+        RightEntity?.Properties.Where(p => LeftEntity?.Properties.All(lp => lp.Name != p.Name) == true) ?? [];
+
+    private IEnumerable<(string Name, string LeftType, string RightType)> TypeDifferences =>
+        SharedProperties
+            .Select(lp => (lp.Name, lp.Type, Right: RightEntity?.Properties.FirstOrDefault(rp => rp.Name == lp.Name)?.Type ?? ""))
+            .Where(x => x.Type != x.Right);
+
+    protected override void OnParametersSet()
+    {
+        metadata = Home.CurrentMetadata;
+        if (metadata == null || string.IsNullOrEmpty(EncodedTypeName)) return;
+
+        var typeName = System.Net.WebUtility.UrlDecode(EncodedTypeName);
+        var entity = metadata.Entities.FirstOrDefault(e => e.FullTypeName == typeName);
+        if (entity != null)
+        {
+            leftEntityType = entity.FullTypeName;
+            // Auto-select a related version if available
+            if (entity.HasMultipleVersions && entity.RelatedVersions.Count > 0)
+            {
+                var relatedSetName = entity.RelatedVersions.First();
+                var relatedEntity = metadata.Entities.FirstOrDefault(e => e.EntitySetName == relatedSetName);
+                if (relatedEntity != null)
+                {
+                    rightEntityType = relatedEntity.FullTypeName;
+                }
+            }
+        }
+    }
+
+    private record ComparisonRow(string Name, string? LeftType, string? RightType, string Status, string RowClass);
+
+    private IEnumerable<ComparisonRow> GetComparisonRows()
+    {
+        if (LeftEntity == null || RightEntity == null) return [];
+
+        var leftProps = LeftEntity.Properties.ToDictionary(p => p.Name);
+        var rightProps = RightEntity.Properties.ToDictionary(p => p.Name);
+        var allNames = leftProps.Keys.Union(rightProps.Keys).OrderBy(n => n);
+
+        var rows = new List<ComparisonRow>();
+        foreach (var name in allNames)
+        {
+            var hasLeft = leftProps.TryGetValue(name, out var left);
+            var hasRight = rightProps.TryGetValue(name, out var right);
+
+            string status;
+            string rowClass;
+            if (hasLeft && hasRight)
+            {
+                if (left!.Type != right!.Type)
+                {
+                    status = "type-diff";
+                    rowClass = "table-danger";
+                }
+                else
+                {
+                    status = "shared";
+                    rowClass = "";
+                }
+            }
+            else if (hasLeft)
+            {
+                status = "left-only";
+                rowClass = "table-primary";
+            }
+            else
+            {
+                status = "right-only";
+                rowClass = "table-success";
+            }
+
+            // Apply tab filter
+            if (activeTab == "shared" && status != "shared") continue;
+            if (activeTab == "leftonly" && status != "left-only") continue;
+            if (activeTab == "rightonly" && status != "right-only") continue;
+            if (activeTab == "diff" && status != "type-diff") continue;
+
+            rows.Add(new ComparisonRow(name, left?.DisplayType, right?.DisplayType, status, rowClass));
+        }
+
+        return rows;
+    }
+}
