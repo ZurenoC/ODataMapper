@@ -13,6 +13,7 @@ builder.Services.AddHttpClient<ODataMetadataService>(client =>
     client.DefaultRequestHeaders.Add("Accept", "application/xml");
 });
 builder.Services.AddScoped<ODataMetadataService>();
+builder.Services.AddScoped<MetadataStateService>();
 
 var app = builder.Build();
 

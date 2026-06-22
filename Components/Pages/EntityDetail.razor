@@ -1,6 +1,7 @@
 @page "/entity/{EncodedTypeName}"
 @using ODataMapper.Models
-@using ODataMapper.Components.Pages
+@using ODataMapper.Services
+@inject MetadataStateService StateService
 @rendermode InteractiveServer
 
 <PageTitle>@(entity?.Name ?? "Entity") - OData Analyzer</PageTitle>
@@ -280,7 +281,7 @@
 
     protected override void OnParametersSet()
     {
-        metadata = Home.CurrentMetadata;
+        metadata = StateService.CurrentMetadata;
         if (metadata == null) return;
 
         var typeName = System.Net.WebUtility.UrlDecode(EncodedTypeName);

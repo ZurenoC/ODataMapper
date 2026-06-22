@@ -1,7 +1,8 @@
 @page "/compare/{EncodedTypeName}"
 @page "/compare"
 @using ODataMapper.Models
-@using ODataMapper.Components.Pages
+@using ODataMapper.Services
+@inject MetadataStateService StateService
 @rendermode InteractiveServer
 
 <PageTitle>Compare Entities - OData Analyzer</PageTitle>
@@ -99,7 +100,23 @@
                 </div>
             </div>
 
-            @* Tabbed Comparison *@
+            @* Search + Tabs *@
+            <div class="row mb-3">
+                <div class="col-md-6">
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="bi bi-search"></i></span>
+                        <input type="text" class="form-control" placeholder="Filter properties by name..."
+                               @bind="propertyFilter" @bind:event="oninput" />
+                        @if (!string.IsNullOrEmpty(propertyFilter))
+                        {
+                            <button class="btn btn-outline-secondary" @onclick="() => propertyFilter = string.Empty">
+                                <i class="bi bi-x"></i>
+                            </button>
+                        }
+                    </div>
+                </div>
+            </div>
+
             <ul class="nav nav-tabs mb-3">
                 <li class="nav-item">
                     <button class="nav-link @(activeTab == "all" ? "active" : "")" @onclick='() => activeTab = "all"'>
@@ -136,6 +153,7 @@
                             <th class="text-primary">@LeftEntity.Name Type</th>
                             <th class="text-success">@RightEntity.Name Type</th>
                             <th>Status</th>
+                            <th>Enum</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -160,6 +178,14 @@
                                         case "type-diff":
                                             <span class="badge bg-danger">Type Changed</span>
                                             break;
+                                    }
+                                </td>
+                                <td>
+                                    @if (row.IsEnum)
+                                    {
+                                        <button class="btn btn-sm btn-outline-info py-0 px-1" @onclick="() => ShowEnum(row.EnumTypeName!)">
+                                            View Values
+                                        </button>
                                     }
                                 </td>
                             </tr>
@@ -228,6 +254,52 @@
                 </div>
             </div>
         }
+
+        @* Enum Detail Modal *@
+        @if (selectedEnum != null)
+        {
+            <div class="modal fade show d-block" tabindex="-1" style="background: rgba(0,0,0,0.5);">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header bg-info text-white">
+                            <h5 class="modal-title">Enum: @selectedEnum.Name</h5>
+                            <button type="button" class="btn-close btn-close-white" @onclick="CloseEnum"></button>
+                        </div>
+                        <div class="modal-body">
+                            <p><strong>Full Name:</strong> <code>@selectedEnum.FullName</code></p>
+                            <p><strong>Underlying Type:</strong> <code>@selectedEnum.UnderlyingType</code></p>
+                            @if (selectedEnum.IsFlags)
+                            {
+                                <span class="badge bg-warning text-dark mb-2">Flags Enum</span>
+                            }
+                            <p class="text-muted mb-2">@selectedEnum.Members.Count available values:</p>
+                            <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                                <table class="table table-sm table-striped">
+                                    <thead class="table-light sticky-top">
+                                        <tr>
+                                            <th>Name</th>
+                                            <th>Value</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var member in selectedEnum.Members)
+                                        {
+                                            <tr>
+                                                <td>@member.Name</td>
+                                                <td><code>@(member.Value ?? "—")</code></td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" @onclick="CloseEnum">Close</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
     }
 </div>
 
@@ -239,6 +311,8 @@
     private string leftEntityType = string.Empty;
     private string rightEntityType = string.Empty;
     private string activeTab = "all";
+    private string propertyFilter = string.Empty;
+    private ODataEnumType? selectedEnum;
 
     private ODataEntity? LeftEntity => metadata?.Entities.FirstOrDefault(e => e.FullTypeName == leftEntityType);
     private ODataEntity? RightEntity => metadata?.Entities.FirstOrDefault(e => e.FullTypeName == rightEntityType);
@@ -259,7 +333,7 @@
 
     protected override void OnParametersSet()
     {
-        metadata = Home.CurrentMetadata;
+        metadata = StateService.CurrentMetadata;
         if (metadata == null || string.IsNullOrEmpty(EncodedTypeName)) return;
 
         var typeName = System.Net.WebUtility.UrlDecode(EncodedTypeName);
@@ -280,7 +354,14 @@
         }
     }
 
-    private record ComparisonRow(string Name, string? LeftType, string? RightType, string Status, string RowClass);
+    private void ShowEnum(string enumTypeName)
+    {
+        selectedEnum = StateService.FindEnum(enumTypeName);
+    }
+
+    private void CloseEnum() => selectedEnum = null;
+
+    private record ComparisonRow(string Name, string? LeftType, string? RightType, string Status, string RowClass, bool IsEnum, string? EnumTypeName);
 
     private IEnumerable<ComparisonRow> GetComparisonRows()
     {
@@ -293,6 +374,11 @@
         var rows = new List<ComparisonRow>();
         foreach (var name in allNames)
         {
+            // Apply property name filter
+            if (!string.IsNullOrWhiteSpace(propertyFilter) &&
+                !name.Contains(propertyFilter, StringComparison.OrdinalIgnoreCase))
+                continue;
+
             var hasLeft = leftProps.TryGetValue(name, out var left);
             var hasRight = rightProps.TryGetValue(name, out var right);
 
@@ -328,7 +414,11 @@
             if (activeTab == "rightonly" && status != "right-only") continue;
             if (activeTab == "diff" && status != "type-diff") continue;
 
-            rows.Add(new ComparisonRow(name, left?.DisplayType, right?.DisplayType, status, rowClass));
+            // Determine if either side is an enum
+            var isEnum = (left?.IsEnum == true) || (right?.IsEnum == true);
+            var enumTypeName = left?.EnumTypeName ?? right?.EnumTypeName;
+
+            rows.Add(new ComparisonRow(name, left?.DisplayType, right?.DisplayType, status, rowClass, isEnum, enumTypeName));
         }
 
         return rows;

@@ -2,6 +2,7 @@
 @using ODataMapper.Models
 @using ODataMapper.Services
 @inject ODataMetadataService MetadataService
+@inject MetadataStateService StateService
 @rendermode InteractiveServer
 
 <PageTitle>OData Metadata Analyzer</PageTitle>
@@ -187,8 +188,15 @@
     private string errorMessage = string.Empty;
     private ODataMetadataResult? metadata;
 
-    // Store metadata in a static field so other pages can access it (simple state management)
-    public static ODataMetadataResult? CurrentMetadata { get; private set; }
+    protected override void OnInitialized()
+    {
+        // Restore metadata from state service if already loaded (persists across navigation)
+        if (StateService.IsLoaded)
+        {
+            metadata = StateService.CurrentMetadata;
+            metadataUrl = StateService.LastUrl ?? string.Empty;
+        }
+    }
 
     private IEnumerable<ODataEntity> FilteredEntities
     {
@@ -237,7 +245,7 @@
         try
         {
             metadata = await MetadataService.LoadMetadataAsync(metadataUrl);
-            CurrentMetadata = metadata;
+            StateService.SetMetadata(metadata, metadataUrl);
         }
         catch (HttpRequestException ex)
         {
